@@ -1,0 +1,406 @@
+// Online Examination and Result System — data model.
+// Extra DB-level guarantees that Prisma cannot express (partial unique index, triggers)
+// live in the hand-written SQL at the end of migrations/0001_init/migration.sql.
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  TEACHER
+  STUDENT
+}
+
+enum QuestionType {
+  SINGLE
+  MULTIPLE
+  TRUE_FALSE
+}
+
+enum ExamStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum GradingMethod {
+  HIGHEST
+  LAST
+  FIRST
+  AVERAGE
+}
+
+enum AttemptStatus {
+  IN_PROGRESS
+  SUBMITTED
+  EXPIRED
+  GRADED
+  ABANDONED
+}
+
+enum SubmitReason {
+  MANUAL
+  TIMEOUT
+  SWEEPER
+  VIOLATION
+  ADMIN
+}
+
+// ───────────────────────── Users & auth ─────────────────────────
+
+model User {
+  id               String    @id @default(uuid()) @db.Uuid
+  email            String    @unique
+  passwordHash     String    @map("password_hash")
+  fullName         String    @map("full_name")
+  role             Role      @default(STUDENT)
+  isActive         Boolean   @default(true) @map("is_active")
+  failedLoginCount Int       @default(0) @map("failed_login_count")
+  lockedUntil      DateTime? @map("locked_until") @db.Timestamptz(3)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  refreshTokens  RefreshToken[]
+  ownedClasses   Class[]          @relation("ClassOwner")
+  classMembers   ClassMember[]
+  banks          QuestionBank[]
+  exams          Exam[]
+  assignments    ExamAssignment[]
+  attempts       Attempt[]
+  auditLogs      AuditLog[]
+  questionEdits  QuestionVersion[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  familyId   String    @map("family_id") @db.Uuid
+  tokenHash  String    @unique @map("token_hash")
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(3)
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(3)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([familyId])
+  @@map("refresh_tokens")
+}
+
+model Class {
+  id        String        @id @default(uuid()) @db.Uuid
+  name      String
+  ownerId   String        @map("owner_id") @db.Uuid
+  createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  owner     User          @relation("ClassOwner", fields: [ownerId], references: [id])
+  members   ClassMember[]
+  assignments ExamAssignment[]
+
+  @@map("classes")
+}
+
+model ClassMember {
+  classId String @map("class_id") @db.Uuid
+  userId  String @map("user_id") @db.Uuid
+  class   Class  @relation(fields: [classId], references: [id], onDelete: Cascade)
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([classId, userId])
+  @@index([userId])
+  @@map("class_members")
+}
+
+// ───────────────────────── Question bank ─────────────────────────
+
+model Subject {
+  id        String         @id @default(uuid()) @db.Uuid
+  code      String         @unique
+  name      String
+  createdAt DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  banks     QuestionBank[]
+  exams     Exam[]
+
+  @@map("subjects")
+}
+
+model QuestionBank {
+  id          String     @id @default(uuid()) @db.Uuid
+  subjectId   String     @map("subject_id") @db.Uuid
+  ownerId     String     @map("owner_id") @db.Uuid
+  name        String
+  description String?
+  createdAt   DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+  subject     Subject    @relation(fields: [subjectId], references: [id])
+  owner       User       @relation(fields: [ownerId], references: [id])
+  questions   Question[]
+  sections    ExamSection[]
+
+  @@index([ownerId])
+  @@map("question_banks")
+}
+
+model Question {
+  id               String       @id @default(uuid()) @db.Uuid
+  bankId           String       @map("bank_id") @db.Uuid
+  type             QuestionType
+  difficulty       Int          @default(1) @db.SmallInt
+  tags             String[]     @default([])
+  /// Normalised content+options hash used for duplicate detection on import.
+  contentHash      String       @map("content_hash")
+  currentVersionId String?      @unique @map("current_version_id") @db.Uuid
+  isDeleted        Boolean      @default(false) @map("is_deleted")
+  createdAt        DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  bank             QuestionBank      @relation(fields: [bankId], references: [id], onDelete: Cascade)
+  currentVersion   QuestionVersion?  @relation("CurrentVersion", fields: [currentVersionId], references: [id])
+  versions         QuestionVersion[] @relation("Versions")
+  fixedIn          ExamFixedQuestion[]
+
+  @@index([bankId, difficulty])
+  @@index([bankId, contentHash])
+  @@map("questions")
+}
+
+/// Immutable snapshot of a question's content. Editing a question creates a new version,
+/// so attempts that referenced the old version are never affected.
+model QuestionVersion {
+  id            String           @id @default(uuid()) @db.Uuid
+  questionId    String           @map("question_id") @db.Uuid
+  version       Int
+  type          QuestionType
+  content       String
+  explanation   String?
+  marks         Decimal          @default(1) @db.Decimal(6, 2)
+  negativeMarks Decimal          @default(0) @map("negative_marks") @db.Decimal(6, 2)
+  createdById   String?          @map("created_by_id") @db.Uuid
+  createdAt     DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  question      Question         @relation("Versions", fields: [questionId], references: [id], onDelete: Cascade)
+  currentOf     Question?        @relation("CurrentVersion")
+  createdBy     User?            @relation(fields: [createdById], references: [id])
+  options       QuestionOption[]
+  poolItems     ExamPoolItem[]
+  attemptItems  AttemptQuestion[]
+
+  @@unique([questionId, version])
+  @@map("question_versions")
+}
+
+model QuestionOption {
+  id                String          @id @default(uuid()) @db.Uuid
+  questionVersionId String          @map("question_version_id") @db.Uuid
+  content           String
+  isCorrect         Boolean         @map("is_correct")
+  orderIndex        Int             @map("order_index")
+  questionVersion   QuestionVersion @relation(fields: [questionVersionId], references: [id], onDelete: Cascade)
+
+  @@index([questionVersionId])
+  @@map("question_options")
+}
+
+// ───────────────────────── Exams ─────────────────────────
+
+model Exam {
+  id               String        @id @default(uuid()) @db.Uuid
+  ownerId          String        @map("owner_id") @db.Uuid
+  subjectId        String?       @map("subject_id") @db.Uuid
+  title            String
+  instructions     String?
+  durationSeconds  Int           @map("duration_seconds")
+  startAt          DateTime      @map("start_at") @db.Timestamptz(3)
+  endAt            DateTime      @map("end_at") @db.Timestamptz(3)
+  resultsReleaseAt DateTime?     @map("results_release_at") @db.Timestamptz(3)
+  maxAttempts      Int           @default(1) @map("max_attempts")
+  gradingMethod    GradingMethod @default(HIGHEST) @map("grading_method")
+  shuffleQuestions Boolean       @default(true) @map("shuffle_questions")
+  shuffleOptions   Boolean       @default(true) @map("shuffle_options")
+  partialCredit    Boolean       @default(false) @map("partial_credit")
+  passMark         Decimal?      @map("pass_mark") @db.Decimal(8, 2)
+  status           ExamStatus    @default(DRAFT)
+  publishedAt      DateTime?     @map("published_at") @db.Timestamptz(3)
+  version          Int           @default(0)
+  createdAt        DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  owner            User                @relation(fields: [ownerId], references: [id])
+  subject          Subject?            @relation(fields: [subjectId], references: [id])
+  sections         ExamSection[]
+  fixedQuestions   ExamFixedQuestion[]
+  assignments      ExamAssignment[]
+  attempts         Attempt[]
+
+  @@index([ownerId])
+  @@index([status, startAt])
+  @@map("exams")
+}
+
+/// Random-draw rule: pick `pickCount` questions from a bank, optionally filtered by difficulty/tag.
+model ExamSection {
+  id         String         @id @default(uuid()) @db.Uuid
+  examId     String         @map("exam_id") @db.Uuid
+  bankId     String         @map("bank_id") @db.Uuid
+  difficulty Int?           @db.SmallInt
+  tag        String?
+  pickCount  Int            @map("pick_count")
+  orderIndex Int            @map("order_index")
+  exam       Exam           @relation(fields: [examId], references: [id], onDelete: Cascade)
+  bank       QuestionBank   @relation(fields: [bankId], references: [id])
+  pool       ExamPoolItem[]
+
+  @@map("exam_sections")
+}
+
+/// Candidate question versions frozen at publish time for a random-draw section.
+model ExamPoolItem {
+  sectionId         String          @map("section_id") @db.Uuid
+  questionVersionId String          @map("question_version_id") @db.Uuid
+  section           ExamSection     @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  questionVersion   QuestionVersion @relation(fields: [questionVersionId], references: [id])
+
+  @@id([sectionId, questionVersionId])
+  @@map("exam_pool_items")
+}
+
+model ExamFixedQuestion {
+  examId            String   @map("exam_id") @db.Uuid
+  questionId        String   @map("question_id") @db.Uuid
+  orderIndex        Int      @map("order_index")
+  /// Set at publish time: the question version frozen into this exam.
+  questionVersionId String?  @map("question_version_id") @db.Uuid
+  exam              Exam     @relation(fields: [examId], references: [id], onDelete: Cascade)
+  question          Question @relation(fields: [questionId], references: [id])
+
+  @@id([examId, questionId])
+  @@map("exam_fixed_questions")
+}
+
+model ExamAssignment {
+  id        String   @id @default(uuid()) @db.Uuid
+  examId    String   @map("exam_id") @db.Uuid
+  studentId String?  @map("student_id") @db.Uuid
+  classId   String?  @map("class_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  exam      Exam     @relation(fields: [examId], references: [id], onDelete: Cascade)
+  student   User?    @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  class     Class?   @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  @@unique([examId, studentId])
+  @@unique([examId, classId])
+  @@map("exam_assignments")
+}
+
+// ───────────────────────── Attempts ─────────────────────────
+
+model Attempt {
+  id              String        @id @default(uuid()) @db.Uuid
+  examId          String        @map("exam_id") @db.Uuid
+  studentId       String        @map("student_id") @db.Uuid
+  attemptNo       Int           @map("attempt_no")
+  status          AttemptStatus @default(IN_PROGRESS)
+  startedAt       DateTime      @default(now()) @map("started_at") @db.Timestamptz(3)
+  /// LEAST(started_at + duration, exam.end_at), computed once from the DB clock.
+  deadlineAt      DateTime      @map("deadline_at") @db.Timestamptz(3)
+  submittedAt     DateTime?     @map("submitted_at") @db.Timestamptz(3)
+  submitReason    SubmitReason? @map("submit_reason")
+  gradedAt        DateTime?     @map("graded_at") @db.Timestamptz(3)
+  seed            Int
+  clientSessionId String?       @map("client_session_id") @db.Uuid
+  version         Int           @default(0)
+
+  exam            Exam              @relation(fields: [examId], references: [id])
+  student         User              @relation(fields: [studentId], references: [id])
+  questions       AttemptQuestion[]
+  answers         AttemptAnswer[]
+  result          Result?
+
+  @@unique([examId, studentId, attemptNo])
+  @@index([status, deadlineAt])
+  @@index([examId, studentId])
+  @@map("attempts")
+}
+
+/// Snapshot of the question order and option order the student saw.
+model AttemptQuestion {
+  attemptId         String          @map("attempt_id") @db.Uuid
+  position          Int
+  questionVersionId String          @map("question_version_id") @db.Uuid
+  optionOrder       String[]        @map("option_order") @db.Uuid
+  attempt           Attempt         @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  questionVersion   QuestionVersion @relation(fields: [questionVersionId], references: [id])
+
+  @@id([attemptId, position])
+  @@unique([attemptId, questionVersionId])
+  @@map("attempt_questions")
+}
+
+model AttemptAnswer {
+  attemptId         String   @map("attempt_id") @db.Uuid
+  questionVersionId String   @map("question_version_id") @db.Uuid
+  selectedOptionIds String[] @map("selected_option_ids") @db.Uuid
+  seq               Int
+  savedAt           DateTime @default(now()) @map("saved_at") @db.Timestamptz(3)
+  attempt           Attempt  @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+
+  @@id([attemptId, questionVersionId])
+  @@map("attempt_answers")
+}
+
+// ───────────────────────── Results & audit ─────────────────────────
+
+model Result {
+  attemptId    String   @id @map("attempt_id") @db.Uuid
+  score        Decimal  @db.Decimal(8, 2)
+  maxScore     Decimal  @map("max_score") @db.Decimal(8, 2)
+  correctCount Int      @map("correct_count")
+  wrongCount   Int      @map("wrong_count")
+  blankCount   Int      @map("blank_count")
+  passed       Boolean?
+  breakdown    Json
+  gradedAt     DateTime @default(now()) @map("graded_at") @db.Timestamptz(3)
+  locked       Boolean  @default(true)
+  /// HMAC_SHA256(secret, attempt_id|score|max_score|sha256(answers)) — detects out-of-band edits.
+  checksum     String
+  version      Int      @default(0)
+  attempt      Attempt  @relation(fields: [attemptId], references: [id])
+
+  @@map("results")
+}
+
+/// Append-only (enforced by trigger). Records grade changes, deadline extensions, exam edits.
+model AuditLog {
+  id         BigInt   @id @default(autoincrement())
+  entityType String   @map("entity_type")
+  entityId   String   @map("entity_id")
+  actorId    String?  @map("actor_id") @db.Uuid
+  action     String
+  oldValue   Json?    @map("old_value")
+  newValue   Json?    @map("new_value")
+  reason     String?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  actor      User?    @relation(fields: [actorId], references: [id])
+
+  @@index([entityType, entityId, createdAt])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+model IdempotencyKey {
+  userId       String   @map("user_id") @db.Uuid
+  key          String
+  endpoint     String
+  responseCode Int      @map("response_code")
+  responseBody Json     @map("response_body")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@id([userId, key])
+  @@index([createdAt])
+  @@map("idempotency_keys")
+}

@@ -1,0 +1,96 @@
+name: CI
+
+# Pushes to main and v* tags run this via deploy.yml (CI must pass before images are built).
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+  workflow_call:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Lint, typecheck, unit + integration tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: exam_test
+          POSTGRES_USER: exam
+          POSTGRES_PASSWORD: exam
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U exam -d exam_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      # Integration tests use this fresh service DB instead of starting Testcontainers.
+      TEST_DATABASE_URL: postgresql://exam:exam@localhost:5432/exam_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build:shared
+      - run: pnpm typecheck
+      - run: pnpm --filter @exam/api lint
+      - run: pnpm --filter @exam/api test
+      - run: pnpm --filter @exam/web test
+      - run: pnpm --filter @exam/web build
+
+  e2e:
+    name: Playwright end-to-end
+    needs: test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: exam
+          POSTGRES_USER: exam
+          POSTGRES_PASSWORD: exam
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U exam -d exam"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+    env:
+      DATABASE_URL: postgresql://exam:exam@localhost:5432/exam
+      REDIS_URL: redis://localhost:6379
+      JWT_ACCESS_SECRET: ci-access-secret-0123456789-0123456789-xx
+      JWT_REFRESH_SECRET: ci-refresh-secret-0123456789-0123456789-x
+      RESULT_HMAC_SECRET: ci-result-hmac-secret-0123456789-01234567
+      LOG_LEVEL: warn
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm db:migrate && pnpm db:seed
+      - name: Start API, worker and web
+        run: |
+          (cd apps/api && node dist/main.js > ../../api.log 2>&1 &)
+          (cd apps/api && node dist/worker.js > ../../worker.log 2>&1 &)
+          (cd apps/web && npx vite preview --port 5173 --strictPort > ../../web.log 2>&1 &)
+          npx wait-on -t 60000 http://localhost:4000/api/health http://localhost:5173
+      - run: npx playwright install --with-deps chromium
+      - run: pnpm test:e2e
+      - if: failure()
+        run: tail -n 200 api.log worker.log web.log
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report

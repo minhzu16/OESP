@@ -1,0 +1,24 @@
+{$DOMAIN} {
+	encode gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+
+	# Prometheus metrics stay internal.
+	handle /api/metrics {
+		respond 404
+	}
+
+	handle /api/* {
+		reverse_proxy api:4000 {
+			lb_policy round_robin
+			health_uri /api/health
+		}
+	}
+
+	handle {
+		reverse_proxy web:8080
+	}
+}

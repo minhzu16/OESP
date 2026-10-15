@@ -1,0 +1,28 @@
+# Development infrastructure: PostgreSQL + Redis.
+# API/web run on the host via `pnpm dev`.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: exam
+      POSTGRES_USER: exam
+      POSTGRES_PASSWORD: exam
+    ports: ['${POSTGRES_PORT:-5432}:5432']
+    volumes: ['pg_data:/var/lib/postgresql/data']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U exam -d exam']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports: ['${REDIS_PORT:-6379}:6379']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pg_data: {}
