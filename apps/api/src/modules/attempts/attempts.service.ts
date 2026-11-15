@@ -3,10 +3,14 @@ import { Attempt, AttemptStatus, Prisma } from '@prisma/client';
 import {
   AttemptView,
   ErrorCode,
+  ProctoringEventType,
+  ProctoringSeverity,
   SaveAnswerResponse,
   StudentExamDto,
   SubmitResponse,
+  TelemetryResponse,
 } from '@exam/shared';
+import { RecordTelemetryDto } from './attempts.dto';
 import { getConfig } from '../../config/config';
 import { AuthUser } from '../../common/auth.decorators';
 import { AppException, conflict, notFound } from '../../common/errors';
@@ -382,6 +386,97 @@ export class AttemptsService {
         passed: released && a.result ? a.result.passed : null,
       };
     });
+  }
+
+  /**
+   * Records anti-cheating proctoring telemetry event (tab switch, window blur, copy/paste attempt, fullscreen exit).
+   * Aggregates cumulative risk score and persists to the append-only audit trail.
+   */
+  async recordTelemetry(
+    attemptId: string,
+    dto: RecordTelemetryDto,
+    user: AuthUser,
+  ): Promise<TelemetryResponse> {
+    const attempt = await this.prisma.attempt.findFirst({
+      where: { id: attemptId, studentId: user.id },
+    });
+    if (!attempt) throw notFound('Attempt');
+    if (attempt.status !== 'IN_PROGRESS') {
+      throw conflict(ErrorCode.ATTEMPT_NOT_IN_PROGRESS, 'Attempt is no longer in progress', { status: attempt.status });
+    }
+
+    const riskWeights: Record<ProctoringEventType, number> = {
+      TAB_SWITCH: 15,
+      WINDOW_BLUR: 10,
+      COPY_PASTE_ATTEMPT: 25,
+      FULLSCREEN_EXIT: 20,
+    };
+
+    const eventScore = riskWeights[dto.eventType] ?? 10;
+
+    // Retrieve past proctoring telemetry events for this attempt
+    const pastEvents = await this.prisma.auditLog.findMany({
+      where: {
+        entityType: 'ATTEMPT_PROCTORING',
+        entityId: attemptId,
+      },
+      select: { newValue: true },
+    });
+
+    let previousRiskTotal = 0;
+    for (const ev of pastEvents) {
+      if (ev.newValue && typeof ev.newValue === 'object' && 'eventScore' in (ev.newValue as any)) {
+        const score = Number((ev.newValue as any).eventScore);
+        if (!isNaN(score)) previousRiskTotal += score;
+      }
+    }
+
+    const cumulativeRiskScore = previousRiskTotal + eventScore;
+    const totalEventsCount = pastEvents.length + 1;
+
+    let severity: ProctoringSeverity = 'LOW';
+    if (cumulativeRiskScore >= 80) {
+      severity = 'CRITICAL';
+    } else if (cumulativeRiskScore >= 50) {
+      severity = 'HIGH';
+    } else if (cumulativeRiskScore >= 25) {
+      severity = 'MEDIUM';
+    }
+
+    const recordedAt = new Date();
+
+    // Audit log is append-only (DB trigger enforced)
+    await this.prisma.auditLog.create({
+      data: {
+        entityType: 'ATTEMPT_PROCTORING',
+        entityId: attemptId,
+        actorId: user.id,
+        action: dto.eventType,
+        newValue: {
+          eventScore,
+          cumulativeRiskScore,
+          severity,
+          details: dto.details ?? null,
+          clientTimestamp: dto.clientTimestamp ?? null,
+          recordedAt: recordedAt.toISOString(),
+        },
+        reason: `Proctoring violation event: ${dto.eventType}`,
+      },
+    });
+
+    this.logger.warn(
+      `Proctoring telemetry recorded for attempt ${attemptId}: event=${dto.eventType}, score=+${eventScore}, cumulativeScore=${cumulativeRiskScore}, severity=${severity}`,
+    );
+
+    return {
+      attemptId,
+      eventType: dto.eventType,
+      eventScore,
+      totalEventsCount,
+      cumulativeRiskScore,
+      severity,
+      recordedAt: recordedAt.toISOString(),
+    };
   }
 
   private async loadOwn(attemptId: string, user: AuthUser): Promise<Attempt> {

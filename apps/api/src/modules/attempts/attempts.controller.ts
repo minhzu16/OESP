@@ -13,10 +13,10 @@ import {
 import { Throttle } from '@nestjs/throttler';
 import { ApiBearerAuth, ApiHeader, ApiTags } from '@nestjs/swagger';
 import type { Response } from 'express';
-import { AttemptView, SaveAnswerResponse, StudentExamDto, SubmitResponse } from '@exam/shared';
+import { AttemptView, SaveAnswerResponse, StudentExamDto, SubmitResponse, TelemetryResponse } from '@exam/shared';
 import { AuthUser, CurrentUser, Roles } from '../../common/auth.decorators';
 import { IdempotencyInterceptor } from '../../common/idempotency.interceptor';
-import { SaveAnswerDto, StartAttemptDto } from './attempts.dto';
+import { RecordTelemetryDto, SaveAnswerDto, StartAttemptDto } from './attempts.dto';
 import { AttemptsService } from './attempts.service';
 
 @ApiTags('attempts')
@@ -72,5 +72,16 @@ export class AttemptsController {
   @Post('attempts/:id/submit')
   submit(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthUser): Promise<SubmitResponse> {
     return this.attempts.submit(id, user);
+  }
+
+  @Throttle({ default: { limit: 120, ttl: 60_000 } })
+  @HttpCode(200)
+  @Post('attempts/:id/telemetry')
+  recordTelemetry(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: RecordTelemetryDto,
+    @CurrentUser() user: AuthUser,
+  ): Promise<TelemetryResponse> {
+    return this.attempts.recordTelemetry(id, dto, user);
   }
 }

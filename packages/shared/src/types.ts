@@ -3,6 +3,7 @@ import type {
   ExamPhase,
   ExamStatus,
   GradingMethod,
+  ProctoringEventType,
   QuestionType,
   Role,
   SubmitReason,
@@ -181,4 +182,16 @@ export interface AttemptResultDto {
   blankCount?: number;
   gradedAt?: string;
   review?: ResultReviewItem[];
+}
+
+export type ProctoringSeverity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+
+export interface TelemetryResponse {
+  attemptId: string;
+  eventType: ProctoringEventType;
+  eventScore: number;
+  totalEventsCount: number;
+  cumulativeRiskScore: number;
+  severity: ProctoringSeverity;
+  recordedAt: string;
 }

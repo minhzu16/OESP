@@ -37,3 +37,11 @@ export const SubmitReason = {
   ADMIN: 'ADMIN',
 } as const;
 export type SubmitReason = (typeof SubmitReason)[keyof typeof SubmitReason];
+
+export const ProctoringEventType = {
+  TAB_SWITCH: 'TAB_SWITCH',
+  WINDOW_BLUR: 'WINDOW_BLUR',
+  COPY_PASTE_ATTEMPT: 'COPY_PASTE_ATTEMPT',
+  FULLSCREEN_EXIT: 'FULLSCREEN_EXIT',
+} as const;
+export type ProctoringEventType = (typeof ProctoringEventType)[keyof typeof ProctoringEventType];

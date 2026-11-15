@@ -1,4 +1,5 @@
-import { ArrayMaxSize, IsArray, IsInt, IsOptional, IsUUID, Max, Min } from 'class-validator';
+import { ProctoringEventType } from '@exam/shared';
+import { ArrayMaxSize, IsArray, IsEnum, IsInt, IsOptional, IsString, IsUUID, Max, Min } from 'class-validator';
 
 export class StartAttemptDto {
   /** Identifies the browser tab/device that started the attempt (informational). */
@@ -18,4 +19,18 @@ export class SaveAnswerDto {
   @Min(1)
   @Max(2_147_483_647)
   seq: number;
+}
+
+export class RecordTelemetryDto {
+  @IsEnum(ProctoringEventType)
+  eventType: ProctoringEventType;
+
+  @IsOptional()
+  @IsString()
+  details?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  clientTimestamp?: number;
 }
