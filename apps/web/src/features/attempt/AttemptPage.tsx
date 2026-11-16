@@ -95,6 +95,52 @@ export function AttemptPage() {
     return () => window.removeEventListener('beforeunload', handler);
   }, []);
 
+  // Proctoring telemetry: detect tab switch, window blur, copy/paste attempts
+  useEffect(() => {
+    if (!id || view?.status !== 'IN_PROGRESS') return;
+
+    let lastSent = 0;
+    const sendTelemetry = (
+      eventType: 'TAB_SWITCH' | 'WINDOW_BLUR' | 'COPY_PASTE_ATTEMPT' | 'FULLSCREEN_EXIT',
+      details?: string,
+    ) => {
+      const now = Date.now();
+      if (now - lastSent < 2000) return; // Client throttle: max 1 per 2 seconds
+      lastSent = now;
+      post(`/attempts/${id}/telemetry`, {
+        eventType,
+        details,
+        clientTimestamp: now,
+      }).catch(() => {});
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        sendTelemetry('TAB_SWITCH', 'Student switched tab or minimized browser window');
+      }
+    };
+
+    const handleBlur = () => {
+      sendTelemetry('WINDOW_BLUR', 'Browser window lost focus');
+    };
+
+    const handleCopyPaste = (e: ClipboardEvent) => {
+      sendTelemetry('COPY_PASTE_ATTEMPT', `Clipboard ${e.type} event intercepted`);
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handleBlur);
+    window.addEventListener('copy', handleCopyPaste);
+    window.addEventListener('paste', handleCopyPaste);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handleBlur);
+      window.removeEventListener('copy', handleCopyPaste);
+      window.removeEventListener('paste', handleCopyPaste);
+    };
+  }, [id, view?.status]);
+
   const submit = useCallback(
     async (auto: boolean) => {
       if (submitting) return;
@@ -190,7 +236,10 @@ export function AttemptPage() {
   const seconds = Math.ceil((remaining ?? 0) / 1000);
   const timerClass = seconds <= 60 ? 'timer danger' : seconds <= 300 ? 'timer warn' : 'timer';
   const selected = selections.get(question.questionVersionId) ?? [];
-  const unanswered = questions.filter((q) => (selections.get(q.questionVersionId) ?? []).length === 0);
+  const unanswered = useMemo(
+    () => questions.filter((q) => (selections.get(q.questionVersionId) ?? []).length === 0),
+    [questions, selections],
+  );
 
   return (
     <>

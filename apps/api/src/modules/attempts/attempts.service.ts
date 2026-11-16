@@ -20,6 +20,20 @@ import { ExpiryService } from '../core/expiry.service';
 import { GradingService } from '../core/grading.service';
 import { computeDeadline, examPhase, optionOrder, pickQuestionVersions, resultsReleased } from '../exams/exam-rules';
 
+const PROCTORING_RISK_WEIGHTS: Readonly<Record<ProctoringEventType, number>> = {
+  TAB_SWITCH: 15,
+  WINDOW_BLUR: 10,
+  COPY_PASTE_ATTEMPT: 25,
+  FULLSCREEN_EXIT: 20,
+};
+
+function resolveProctoringSeverity(score: number): ProctoringSeverity {
+  if (score >= 80) return 'CRITICAL';
+  if (score >= 50) return 'HIGH';
+  if (score >= 25) return 'MEDIUM';
+  return 'LOW';
+}
+
 @Injectable()
 export class AttemptsService {
   private readonly logger = new Logger(AttemptsService.name);
@@ -405,14 +419,7 @@ export class AttemptsService {
       throw conflict(ErrorCode.ATTEMPT_NOT_IN_PROGRESS, 'Attempt is no longer in progress', { status: attempt.status });
     }
 
-    const riskWeights: Record<ProctoringEventType, number> = {
-      TAB_SWITCH: 15,
-      WINDOW_BLUR: 10,
-      COPY_PASTE_ATTEMPT: 25,
-      FULLSCREEN_EXIT: 20,
-    };
-
-    const eventScore = riskWeights[dto.eventType] ?? 10;
+    const eventScore = PROCTORING_RISK_WEIGHTS[dto.eventType] ?? 10;
 
     // Retrieve past proctoring telemetry events for this attempt
     const pastEvents = await this.prisma.auditLog.findMany({
@@ -423,27 +430,15 @@ export class AttemptsService {
       select: { newValue: true },
     });
 
-    let previousRiskTotal = 0;
-    for (const ev of pastEvents) {
-      if (ev.newValue && typeof ev.newValue === 'object' && 'eventScore' in (ev.newValue as any)) {
-        const score = Number((ev.newValue as any).eventScore);
-        if (!isNaN(score)) previousRiskTotal += score;
-      }
-    }
+    const previousRiskTotal = pastEvents.reduce((acc, ev) => {
+      const score = Number((ev.newValue as Record<string, unknown> | null)?.eventScore);
+      return Number.isFinite(score) ? acc + score : acc;
+    }, 0);
 
     const cumulativeRiskScore = previousRiskTotal + eventScore;
     const totalEventsCount = pastEvents.length + 1;
-
-    let severity: ProctoringSeverity = 'LOW';
-    if (cumulativeRiskScore >= 80) {
-      severity = 'CRITICAL';
-    } else if (cumulativeRiskScore >= 50) {
-      severity = 'HIGH';
-    } else if (cumulativeRiskScore >= 25) {
-      severity = 'MEDIUM';
-    }
-
-    const recordedAt = new Date();
+    const severity = resolveProctoringSeverity(cumulativeRiskScore);
+    const recordedAt = new Date().toISOString();
 
     // Audit log is append-only (DB trigger enforced)
     await this.prisma.auditLog.create({
@@ -458,7 +453,7 @@ export class AttemptsService {
           severity,
           details: dto.details ?? null,
           clientTimestamp: dto.clientTimestamp ?? null,
-          recordedAt: recordedAt.toISOString(),
+          recordedAt,
         },
         reason: `Proctoring violation event: ${dto.eventType}`,
       },
@@ -475,7 +470,7 @@ export class AttemptsService {
       totalEventsCount,
       cumulativeRiskScore,
       severity,
-      recordedAt: recordedAt.toISOString(),
+      recordedAt,
     };
   }
 
