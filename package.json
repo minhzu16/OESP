@@ -17,8 +17,8 @@
     "format": "prettier --write \"**/*.{ts,tsx,js,json,md,yml,css}\""
   },
   "devDependencies": {
-    "@playwright/test": "^1.55.0",
-    "prettier": "^3.6.0"
+    "@playwright/test": "^1.65.1",
+    "prettier": "^3.10.1"
   },
   "engines": {
     "node": ">=22"
