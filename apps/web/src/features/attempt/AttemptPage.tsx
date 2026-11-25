@@ -221,6 +221,11 @@ export function AttemptPage() {
     return () => window.removeEventListener('keydown', onKey);
   }, [question, questions.length, choose, confirming]);
 
+  const unanswered = useMemo(
+    () => questions.filter((q) => (selections.get(q.questionVersionId) ?? []).length === 0),
+    [questions, selections],
+  );
+
   if (loadError) {
     return (
       <main className="page">
@@ -236,10 +241,6 @@ export function AttemptPage() {
   const seconds = Math.ceil((remaining ?? 0) / 1000);
   const timerClass = seconds <= 60 ? 'timer danger' : seconds <= 300 ? 'timer warn' : 'timer';
   const selected = selections.get(question.questionVersionId) ?? [];
-  const unanswered = useMemo(
-    () => questions.filter((q) => (selections.get(q.questionVersionId) ?? []).length === 0),
-    [questions, selections],
-  );
 
   return (
     <>

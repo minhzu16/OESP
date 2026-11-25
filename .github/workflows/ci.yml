@@ -53,20 +53,26 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm --filter @exam/api lint
       - name: Run API Tests with Coverage
-        run: pnpm --filter @exam/api test:coverage | tee api-coverage.txt
+        run: |
+          set -o pipefail
+          pnpm --filter @exam/api test:coverage | tee api-coverage.txt
       - name: Run Web Tests with Coverage
-        run: pnpm --filter @exam/web test:coverage | tee web-coverage.txt
+        run: |
+          set -o pipefail
+          pnpm --filter @exam/web test:coverage | tee web-coverage.txt
       - name: Publish Coverage Summaries
         if: always()
         run: |
-          echo "### Test Coverage - @exam/api" >> "$GITHUB_STEP_SUMMARY"
-          echo '```text' >> "$GITHUB_STEP_SUMMARY"
-          tail -n 25 api-coverage.txt >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "### Test Coverage - @exam/web" >> "$GITHUB_STEP_SUMMARY"
-          echo '```text' >> "$GITHUB_STEP_SUMMARY"
-          tail -n 25 web-coverage.txt >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### Test Coverage - @exam/api"
+            echo '```text'
+            tail -n 25 api-coverage.txt
+            echo '```'
+            echo "### Test Coverage - @exam/web"
+            echo '```text'
+            tail -n 25 web-coverage.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - run: pnpm --filter @exam/web build
 
   e2e:
