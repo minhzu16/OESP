@@ -126,7 +126,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Build API Image
         run: docker build -f apps/api/Dockerfile -t exam-api:${{ github.sha }} .
       - name: Build Web Image
