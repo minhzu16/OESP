@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { JwtModule } from '@nestjs/jwt';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
@@ -14,6 +14,8 @@ import { CoreModule } from './modules/core/core.module';
 import { DirectoryModule } from './modules/directory/directory.module';
 import { ExamsModule } from './modules/exams/exams.module';
 import { HealthModule } from './modules/health/health.controller';
+import { MetricsMiddleware } from './modules/metrics/metrics.middleware';
+import { MetricsModule } from './modules/metrics/metrics.module';
 import { QuestionBankModule } from './modules/question-bank/question-bank.module';
 import { ResultsModule } from './modules/results/results.module';
 
@@ -53,6 +55,7 @@ export function loggerModule() {
     AttemptsModule,
     ResultsModule,
     HealthModule,
+    MetricsModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
@@ -61,4 +64,8 @@ export function loggerModule() {
     { provide: APP_GUARD, useClass: ThrottlerGuard },
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(MetricsMiddleware).forRoutes('*');
+  }
+}

@@ -2,12 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import type { AttemptView, SaveAnswerResponse, SubmitResponse } from '@exam/shared';
 import { api, ApiError, errorMessage, get, NetworkError, post } from '../../api/client';
-import { ErrorAlert, Modal, Spinner } from '../../components/ui';
+import { ErrorAlert, Spinner } from '../../components/ui';
 import { fmtDuration } from '../../lib/format';
 import { queryClient } from '../../queryClient';
+import { AttemptNavigator, SaveIndicator } from './AttemptNavigator';
 import { AutosaveQueue, QueueStatus, SendOutcome } from './autosaveQueue';
 import { serverClock } from './serverClock';
+import { SubmitAttemptModal } from './SubmitAttemptModal';
 import { useCountdown, useOnline } from './useCountdown';
+import { useProctoringTelemetry } from './useProctoringTelemetry';
 
 const KEYS = 'ABCDEFGHIJ';
 
@@ -95,51 +98,7 @@ export function AttemptPage() {
     return () => window.removeEventListener('beforeunload', handler);
   }, []);
 
-  // Proctoring telemetry: detect tab switch, window blur, copy/paste attempts
-  useEffect(() => {
-    if (!id || view?.status !== 'IN_PROGRESS') return;
-
-    let lastSent = 0;
-    const sendTelemetry = (
-      eventType: 'TAB_SWITCH' | 'WINDOW_BLUR' | 'COPY_PASTE_ATTEMPT' | 'FULLSCREEN_EXIT',
-      details?: string,
-    ) => {
-      const now = Date.now();
-      if (now - lastSent < 2000) return; // Client throttle: max 1 per 2 seconds
-      lastSent = now;
-      post(`/attempts/${id}/telemetry`, {
-        eventType,
-        details,
-        clientTimestamp: now,
-      }).catch(() => {});
-    };
-
-    const handleVisibilityChange = () => {
-      if (document.hidden) {
-        sendTelemetry('TAB_SWITCH', 'Student switched tab or minimized browser window');
-      }
-    };
-
-    const handleBlur = () => {
-      sendTelemetry('WINDOW_BLUR', 'Browser window lost focus');
-    };
-
-    const handleCopyPaste = (e: ClipboardEvent) => {
-      sendTelemetry('COPY_PASTE_ATTEMPT', `Clipboard ${e.type} event intercepted`);
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('blur', handleBlur);
-    window.addEventListener('copy', handleCopyPaste);
-    window.addEventListener('paste', handleCopyPaste);
-
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('blur', handleBlur);
-      window.removeEventListener('copy', handleCopyPaste);
-      window.removeEventListener('paste', handleCopyPaste);
-    };
-  }, [id, view?.status]);
+  useProctoringTelemetry(id, view?.status === 'IN_PROGRESS');
 
   const submit = useCallback(
     async (auto: boolean) => {
@@ -343,83 +302,28 @@ export function AttemptPage() {
           </p>
         </section>
 
-        <aside className="stack">
-          <div className="card">
-            <h3 style={{ fontSize: '0.98rem', marginBottom: 12 }}>Question Navigator</h3>
-            <div className="palette">
-              {questions.map((q, i) => {
-                const answered = (selections.get(q.questionVersionId) ?? []).length > 0;
-                const cls = [answered && 'answered', i === current && 'current', flags.has(q.questionVersionId) && 'flagged']
-                  .filter(Boolean)
-                  .join(' ');
-                return (
-                  <button key={q.questionVersionId} className={cls} onClick={() => setCurrent(i)} aria-label={`Question ${i + 1}`}>
-                    {i + 1}
-                  </button>
-                );
-              })}
-            </div>
-            <div className="legend">
-              <span className="row" style={{ gap: 5 }}>
-                <span className="badge blue" style={{ width: 8, height: 8, padding: 0 }} />
-                <span>Answered ({answeredCount}/{questions.length})</span>
-              </span>
-              <span className="row" style={{ gap: 5 }}>
-                <span className="badge amber" style={{ width: 8, height: 8, padding: 0 }} />
-                <span>Flagged ({flags.size})</span>
-              </span>
-            </div>
-          </div>
-          <div className="card small muted" style={{ fontSize: '0.82rem', lineHeight: 1.5 }}>
-            <strong style={{ color: 'var(--text)' }}>Exam Integrity & Autosave:</strong>
-            <p style={{ margin: '6px 0 0', fontSize: '0.82rem' }}>
-              Attempt #{view.attemptNo}. Answers sync continuously with the official server clock. When the countdown reaches zero, your responses are securely submitted automatically.
-            </p>
-          </div>
-        </aside>
+        <AttemptNavigator
+          questions={questions}
+          selections={selections}
+          current={current}
+          flags={flags}
+          answeredCount={answeredCount}
+          attemptNo={view.attemptNo}
+          onSelect={setCurrent}
+        />
       </div>
 
       {confirming && (
-        <Modal title="Submit your exam?" onClose={() => !submitting && setConfirming(false)}>
-          {unanswered.length > 0 ? (
-            <div className="alert warn">
-              {unanswered.length} question{unanswered.length > 1 ? 's are' : ' is'} unanswered:{' '}
-              {unanswered.map((q) => q.position + 1).join(', ')}
-            </div>
-          ) : (
-            <p>All {questions.length} questions are answered.</p>
-          )}
-          {flags.size > 0 && <p className="muted mt">{flags.size} question(s) are flagged for review.</p>}
-          <p className="mt">You cannot change your answers after submitting.</p>
-          {submitError !== null && <div className="alert error">{errorMessage(submitError)}</div>}
-          <div className="actions">
-            <button onClick={() => setConfirming(false)} disabled={submitting}>
-              Keep working
-            </button>
-            <button className="primary" onClick={() => void submit(false)} disabled={submitting}>
-              {submitting ? 'Submitting…' : 'Submit now'}
-            </button>
-          </div>
-        </Modal>
+        <SubmitAttemptModal
+          totalQuestions={questions.length}
+          unanswered={unanswered}
+          flaggedCount={flags.size}
+          submitting={submitting}
+          submitError={submitError}
+          onClose={() => setConfirming(false)}
+          onConfirm={() => void submit(false)}
+        />
       )}
     </>
-  );
-}
-
-function SaveIndicator({ status, online }: { status: QueueStatus; online: boolean }) {
-  const label = !online
-    ? 'Offline — saved on this device'
-    : status === 'saving'
-      ? 'Saving…'
-      : status === 'retrying'
-        ? 'Retrying…'
-        : status === 'closed'
-          ? 'Closed'
-          : 'All answers saved';
-  return (
-    <span className={`save-status ${online ? status : 'retrying'}`}>
-      <span className="dot" />
-      {label}
-    </span>
   );
 }

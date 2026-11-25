@@ -7,6 +7,8 @@ import { assertOwnerOrAdmin, ownerScope } from '../../common/ownership';
 import { dbNow, PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../core/audit.service';
 import { AssignDto, CreateExamDto, SectionDto, UpdateExamDto } from './exams.dto';
+import { assignExamTargets, listExamAssignments } from './exam-assignments.helper';
+import { publishExamTx } from './exam-publish.helper';
 import { examPhase } from './exam-rules';
 
 /** Fields that stay editable after publishing (scheduling / wording, never content). */
@@ -258,80 +260,8 @@ export class ExamsService {
     return this.get(id, user);
   }
 
-  /**
-   * Publishing freezes content: fixed questions are pinned to their current version and every
-   * random-draw section gets a snapshot pool of question versions. Pools are made disjoint
-   * (first matching section wins, fixed questions excluded) so every draw is always feasible.
-   */
   async publish(id: string, user: AuthUser): Promise<ExamDto> {
-    await this.prisma.$transaction(
-      async (tx) => {
-        const exam = await tx.exam.findUnique({
-          where: { id },
-          include: {
-            sections: { orderBy: { orderIndex: 'asc' } },
-            fixedQuestions: { orderBy: { orderIndex: 'asc' }, include: { question: true } },
-          },
-        });
-        if (!exam) throw notFound('Exam');
-        assertOwnerOrAdmin(exam.ownerId, user, 'Exam');
-        if (exam.status !== 'DRAFT') throw this.notEditable('Exam is already published');
-        this.assertWindow(exam.startAt, exam.endAt);
-
-        const problems: string[] = [];
-        const used = new Set<string>();
-        for (const f of exam.fixedQuestions) {
-          if (f.question.isDeleted || !f.question.currentVersionId) {
-            problems.push(`Fixed question ${f.questionId} was deleted`);
-            continue;
-          }
-          used.add(f.question.currentVersionId);
-          await tx.examFixedQuestion.update({
-            where: { examId_questionId: { examId: id, questionId: f.questionId } },
-            data: { questionVersionId: f.question.currentVersionId },
-          });
-        }
-
-        for (const [i, s] of exam.sections.entries()) {
-          const candidates = await tx.question.findMany({
-            where: {
-              bankId: s.bankId,
-              isDeleted: false,
-              currentVersionId: { not: null },
-              difficulty: s.difficulty ?? undefined,
-              tags: s.tag ? { has: s.tag } : undefined,
-            },
-            select: { currentVersionId: true },
-          });
-          const pool = candidates.map((c) => c.currentVersionId!).filter((v) => !used.has(v));
-          if (pool.length < s.pickCount) {
-            problems.push(`Section ${i + 1} needs ${s.pickCount} questions but only ${pool.length} are available`);
-            continue;
-          }
-          pool.forEach((v) => used.add(v));
-          await tx.examPoolItem.createMany({
-            data: pool.map((questionVersionId) => ({ sectionId: s.id, questionVersionId })),
-          });
-        }
-
-        const total = exam.fixedQuestions.length + exam.sections.reduce((n, s) => n + s.pickCount, 0);
-        if (total === 0) problems.push('Exam has no questions');
-        if (problems.length) {
-          throw new AppException(ErrorCode.EXAM_INVALID, 'Exam cannot be published', HttpStatus.BAD_REQUEST, problems);
-        }
-
-        const { count } = await tx.exam.updateMany({
-          where: { id, status: 'DRAFT' },
-          data: { status: 'PUBLISHED', publishedAt: new Date(), version: { increment: 1 } },
-        });
-        if (count === 0) throw this.notEditable('Exam is already published');
-        await this.audit.log(
-          { entityType: 'exam', entityId: id, actorId: user.id, action: 'EXAM_PUBLISHED', newValue: { total } },
-          tx,
-        );
-      },
-      { timeout: 30_000 },
-    );
+    await publishExamTx(this.prisma, this.audit, id, user);
     return this.dto(id);
   }
 
@@ -369,33 +299,13 @@ export class ExamsService {
 
   async listAssignments(id: string, user: AuthUser) {
     await this.loadOwned(id, user);
-    return this.prisma.examAssignment.findMany({
-      where: { examId: id },
-      orderBy: { createdAt: 'asc' },
-      include: {
-        student: { select: { id: true, email: true, fullName: true } },
-        class: { select: { id: true, name: true, _count: { select: { members: true } } } },
-      },
-    });
+    return listExamAssignments(this.prisma, id);
   }
 
   async assign(id: string, dto: AssignDto, user: AuthUser) {
     const exam = await this.loadOwned(id, user);
     if (exam.status === 'ARCHIVED') throw this.notEditable('Archived exams cannot be assigned');
-    const studentIds = [...new Set(dto.studentIds ?? [])];
-    const classIds = [...new Set(dto.classIds ?? [])];
-    const students = await this.prisma.user.count({ where: { id: { in: studentIds }, role: 'STUDENT' } });
-    if (students !== studentIds.length) throw notFound('Student');
-    const classes = await this.prisma.class.count({ where: { id: { in: classIds }, ...ownerScope(user) } });
-    if (classes !== classIds.length) throw notFound('Class');
-    await this.prisma.examAssignment.createMany({
-      data: [
-        ...studentIds.map((studentId) => ({ examId: id, studentId })),
-        ...classIds.map((classId) => ({ examId: id, classId })),
-      ],
-      skipDuplicates: true,
-    });
-    return this.listAssignments(id, user);
+    return assignExamTargets(this.prisma, id, dto, user);
   }
 
   async unassign(id: string, assignmentId: string, user: AuthUser) {
