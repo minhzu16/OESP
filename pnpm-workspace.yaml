@@ -13,3 +13,10 @@ allowBuilds:
   msgpackr-extract: false
   protobufjs: false
   ssh2: false
+
+# Security floors for transitive deps flagged by `pnpm audit` (prisma config, nest platform-express).
+overrides:
+  effect: '>=3.22.1 <4'
+  deepmerge-ts: '>=8.0.0 <9'
+  multer: '>=2.5.0'
+  body-parser@>=2 <2.4.0: '>=2.4.0'

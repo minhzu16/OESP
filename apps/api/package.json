@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint \"src/**/*.ts\" \"test/**/*.ts\"",
     "test": "jest --config jest.config.js",
+    "test:coverage": "jest --config jest.config.js --coverage --ci",
     "test:unit": "jest --config jest.config.js --selectProjects unit",
     "test:int": "jest --config jest.config.js --selectProjects integration",
     "prisma:generate": "prisma generate",

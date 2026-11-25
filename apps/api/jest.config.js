@@ -5,6 +5,17 @@ module.exports = {
   // Integration suites share one database, so files run serially.
   maxWorkers: 1,
   testTimeout: 60_000,
+  collectCoverageFrom: ['src/**/*.ts', '!src/**/*.d.ts', '!src/main.ts', '!src/worker.ts'],
+  coverageDirectory: 'coverage',
+  coverageReporters: ['text', 'text-summary', 'lcov'],
+  coverageThreshold: {
+    global: {
+      branches: 20,
+      functions: 17,
+      lines: 18,
+      statements: 18,
+    },
+  },
   projects: [
     {
       displayName: 'unit',
